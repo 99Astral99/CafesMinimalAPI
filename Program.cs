@@ -1,4 +1,6 @@
 
+using Microsoft.OpenApi.Models;
+
 var builder = WebApplication.CreateBuilder(args);
 
 builder.Services.AddDbContext<CafeDb>(opt =>
@@ -6,10 +8,54 @@ builder.Services.AddDbContext<CafeDb>(opt =>
 	opt.UseNpgsql(builder.Configuration.GetConnectionString("NpgsqlConnection"));
 });
 builder.Services.AddScoped<ICafeRepository, CafeRepository>();
+builder.Services.AddSingleton<IUserRepository, UserRepository>();
+builder.Services.AddSingleton<ITokenService, TokenService>();
+builder.Services.AddAuthorization();
+builder.Services.AddAuthentication(JwtBearerDefaults.AuthenticationScheme)
+	.AddJwtBearer(opt => opt.TokenValidationParameters = new()
+	{
+		ValidateIssuer = true,
+		ValidateAudience = true,
+		ValidateLifetime = true,
+		ValidateIssuerSigningKey = true,
+
+		ValidIssuer = builder.Configuration["Jwt:Issuer"],
+		ValidAudience = builder.Configuration["JwtAudience"],
+		IssuerSigningKey = new SymmetricSecurityKey(
+			Encoding.UTF8.GetBytes(builder.Configuration["Jwt:Key"]))
+	});
+
 builder.Services.AddEndpointsApiExplorer();
-builder.Services.AddSwaggerGen();
+builder.Services.AddSwaggerGen(setup =>
+{
+	var jwtSecurityScheme = new OpenApiSecurityScheme
+	{
+		BearerFormat = "JWT",
+		Name = "JWT Authentication",
+		In = ParameterLocation.Header,
+		Type = SecuritySchemeType.Http,
+		Scheme = JwtBearerDefaults.AuthenticationScheme,
+		Description = "Put **_ONLY_** your JWT Bearer token on textbox below!",
+
+		Reference = new OpenApiReference
+		{
+			Id = JwtBearerDefaults.AuthenticationScheme,
+			Type = ReferenceType.SecurityScheme
+		}
+	};
+
+	setup.AddSecurityDefinition(jwtSecurityScheme.Reference.Id, jwtSecurityScheme);
+
+	setup.AddSecurityRequirement(new OpenApiSecurityRequirement
+	{
+		{ jwtSecurityScheme, Array.Empty<string>() }
+	});
+});
 
 var app = builder.Build();
+
+app.UseAuthentication();
+app.UseAuthorization();
 if (app.Environment.IsDevelopment())
 {
 	using var scope = app.Services.CreateScope();
@@ -19,14 +65,31 @@ if (app.Environment.IsDevelopment())
 	app.UseSwagger();
 	app.UseSwaggerUI();
 }
+app.MapPost("/login", [AllowAnonymous] async (HttpContext context, ITokenService tokenService, [FromBody]UserModel user,
+	IUserRepository userRepository) =>
+{
+	//var user = new UserModel()
+	//{
+	//	UserName = context.Request.Query["username"],
+	//	Password = context.Request.Query["password"]
+	//};
+	var userDto = userRepository.GetUser(user);
+	if (userDto == null)
+		return Results.Unauthorized();
 
-app.MapGet("/cafes", async (ICafeRepository repository) =>
+	var token = tokenService.BuildToken(builder.Configuration["Jwt:Key"],
+		builder.Configuration["Jwt:Issuer"], userDto);
+
+	return Results.Ok(token);
+});
+
+app.MapGet("/cafes", [Authorize] async (ICafeRepository repository) =>
 	await repository.GetCafesAsync())
 	.Produces<List<Cafe>>(StatusCodes.Status200OK)
 	.WithName("GetAllCafes")
 	.WithTags("Getters");
 
-app.MapGet("/cafes/{id}", async (int id, ICafeRepository repository) =>
+app.MapGet("/cafes/{id}", [Authorize]async (int id, ICafeRepository repository) =>
 	await repository.GetCafeAsync(id) is Cafe cafe
 	? Results.Ok(cafe)
 	: Results.NotFound())
@@ -34,7 +97,7 @@ app.MapGet("/cafes/{id}", async (int id, ICafeRepository repository) =>
 	.WithName("GetCafe")
 	.WithTags("Getters");
 
-app.MapPost("/cafes", async ([FromBody] Cafe cafe, ICafeRepository repository) =>
+app.MapPost("/cafes", [Authorize] async ([FromBody] Cafe cafe, ICafeRepository repository) =>
 	{
 		await repository.InsertCafeAsync(cafe);
 		await repository.SaveAsync();
@@ -45,7 +108,7 @@ app.MapPost("/cafes", async ([FromBody] Cafe cafe, ICafeRepository repository) =
 	.WithName("CreateCafe")
 	.WithTags("Creators");
 
-app.MapPut("/cafes", async ([FromBody] Cafe cafe, ICafeRepository repository) =>
+app.MapPut("/cafes", [Authorize] async ([FromBody] Cafe cafe, ICafeRepository repository) =>
 {
 	await repository.UpdateCafeAsync(cafe);
 	await repository.SaveAsync();
@@ -55,7 +118,7 @@ app.MapPut("/cafes", async ([FromBody] Cafe cafe, ICafeRepository repository) =>
 	.WithName("UpdateCafe")
 	.WithTags("Updaters"); ;
 
-app.MapDelete("/cafes/{id}", async (int id, ICafeRepository repository) =>
+app.MapDelete("/cafes/{id}", [Authorize] async (int id, ICafeRepository repository) =>
 {
 	await repository.DeleteCafeAsync(id);
 	await repository.SaveAsync();
@@ -64,8 +127,8 @@ app.MapDelete("/cafes/{id}", async (int id, ICafeRepository repository) =>
 	.WithName("DeleteCafe")
 	.WithTags("Deleters");
 
-app.MapGet("/cafes/search/name/{query}",
-	async (string query, ICafeRepository repository) =>
+app.MapGet("/cafes/search/name/{query}", [Authorize]
+async (string query, ICafeRepository repository) =>
 		await repository.GetCafesAsync(query) is IEnumerable<Cafe> cafes
 		? Results.Ok(cafes)
 		: Results.NotFound(Array.Empty<Cafe>()))

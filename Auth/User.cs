@@ -1,8 +1,10 @@
-public record UserDto(string email, string password);
+public record UserDto(string Username, string Password);
 
 public record UserModel
 {
+	[Required]
 	public string UserName { get; set; } = string.Empty;
-	public string Password { get; set; }
+	[Required]
+	public string Password { get; set; } = string.Empty;
 
 }
